@@ -25,6 +25,7 @@ import random
 import ssl
 import subprocess
 import sys
+import time
 import urllib.request, urllib.parse, urllib.error
 
 import pika
@@ -52,6 +53,7 @@ def main():
     connection = pika.BlockingConnection(pika.ConnectionParameters(
         host=host,
         port=int(port),
+        heartbeat_interval=60,
         ssl=True,
         ssl_options=pika.SSLOptions(
             ssl_version=ssl.PROTOCOL_TLSv1_2,
@@ -84,7 +86,13 @@ def main():
         body = json.loads(body)
         sys.stderr.write("Consuming {0} task:\n{1}\n".format(body['type'],json.dumps(body, indent=2, sort_keys=True)))
         sys.stderr.flush()
-        if subprocess.call(body['command'], shell=True) in [0, 2]:
+        p = subprocess.Popen(body['command'], shell=True)
+        p.poll()
+        while p.returncode is None:
+            time.sleep(3)
+            connection.process_data_events()
+            p.poll()
+        if p.returncode in [0, 2]:
             channel.basic_ack(method_frame.delivery_tag)
 
     connection.close()
