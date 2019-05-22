@@ -138,7 +138,7 @@ def begin(publish, name, context, issue):
         number = issue["number"]
         identifier = "{0}-{1}-{2}".format(name, number, current)
         title = issue["title"]
-        wip = "WIP: {0}: [no-test] {1}".format(hostname, title)
+        wip = "WIP: {0}: {1}".format(hostname, title)
         requests = [ {
             "method": "POST",
             "resource": api.qualify("issues/{0}".format(number)),
@@ -223,7 +223,7 @@ def finish(publishing, ret, name, context, issue):
         requests = [ {
             "method": "POST",
             "resource": api.qualify("issues/{0}".format(number)),
-            "data": { "title": issue["title"], "body": body }
+            "data": { "title": "[no-test] {0}".format(issue["title"]), "body": body }
         } ]
 
         # Close the issue if it's not a pull request, successful, and all tasks done
