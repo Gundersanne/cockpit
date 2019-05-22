@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # This file is part of Cockpit.
@@ -84,8 +84,7 @@ class Logger(object):
         month = time.strftime("%Y%m")
         self.path = os.path.join(directory, "{0}-{1}.log".format(hostname, month))
 
-        if not os.path.exists(directory):
-            os.makedirs(directory)
+        os.makedirs(directory, exist_ok=True)
 
     # Yes, we open the file each time
     def write(self, value):

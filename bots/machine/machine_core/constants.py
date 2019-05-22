@@ -24,7 +24,13 @@ ATOMIC_IMAGES = ["rhel-atomic", "fedora-atomic", "continuous-atomic"]
 
 MACHINE_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 BOTS_DIR = os.path.dirname(MACHINE_DIR)
-TEST_DIR = os.path.join(os.path.dirname(BOTS_DIR), "test")
+BASE_DIR = os.path.dirname(BOTS_DIR)
+TEST_DIR = os.path.join(BASE_DIR, "test")
+GIT_DIR = os.path.join(BASE_DIR, ".git")
+
+IMAGES_DIR = os.path.join(BOTS_DIR, "images")
+SCRIPTS_DIR = os.path.join(IMAGES_DIR, "scripts")
+
 DEFAULT_IDENTITY_FILE = os.path.join(MACHINE_DIR, "identity")
 
 TEST_OS_DEFAULT = "fedora-30"

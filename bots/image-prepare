@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 # This file is part of Cockpit.
 #
 # Copyright (C) 2015 Red Hat, Inc.
@@ -66,8 +66,8 @@ def main():
         sys.stderr.write("image-prepare: use of --install-only with --build-only is incompatible\n")
         return 2
 
-    # Default to putting build output in the TEST_DATA directory
-    results = os.path.join(os.environ.get("TEST_DATA", BASE), "tmp", "build-results")
+    # Default to putting build output in the tmp/build-results directory
+    results = os.path.join(testvm.get_temp_dir(), "build-results")
 
     # Make sure any images are downloaded
     try:
@@ -96,17 +96,16 @@ def main():
 
 def upload_scripts(machine, args):
     machine.execute("rm -rf /var/lib/testvm")
-    machine.upload([ os.path.join(BOTS, "images", "scripts", "lib") ], "/var/lib/testvm")
-    machine.upload([ os.path.join(BOTS, "images", "scripts", "%s.install" % machine.image) ], "/var/tmp")
+    machine.upload([ os.path.join(testvm.SCRIPTS_DIR, "lib") ], "/var/lib/testvm")
+    machine.upload([ os.path.join(testvm.SCRIPTS_DIR, "%s.install" % machine.image) ], "/var/tmp")
     machine.upload([ os.path.join(BASE, "containers") ], "/var/tmp")
 
 # Create the necessary layered image for the build/install
 def prepare_install_image(base_image):
     if "/" not in base_image:
-        base_image = os.path.join(BOTS, "images", base_image)
+        base_image = os.path.join(testvm.IMAGES_DIR, base_image)
     test_images = os.path.join(TEST, "images")
-    if not os.path.exists(test_images):
-        os.makedirs(test_images)
+    os.makedirs(test_images, exist_ok=True)
     install_image = os.path.join(test_images, os.path.basename(base_image))
     base_image = os.path.realpath(testvm.get_test_image(base_image))
     qcow2_image = "{0}.qcow2".format(install_image)

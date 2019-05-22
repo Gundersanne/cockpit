@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # This file is part of Cockpit.
@@ -70,8 +70,15 @@ REPO_BRANCH_CONTEXT = {
     'weldr/lorax': {
         'master': [
             'cockpit/fedora-30',
+            'cockpit/fedora-30/live-iso',
+            'cockpit/fedora-30/qcow2',
         ],
         '_manual': [
+            'cockpit/fedora-30/aws',
+            'cockpit/fedora-30/azure',
+            'cockpit/fedora-30/openstack',
+            'cockpit/fedora-30/vmware',
+
             'cockpit/rhel-8-0',
             'cockpit/rhel-8-1',
         ],
@@ -88,7 +95,18 @@ REPO_BRANCH_CONTEXT = {
         ],
         'rhel-8.1': ['cockpit/rhel-8-1/chrome', 'cockpit/rhel-8-1/firefox', 'cockpit/rhel-8-1/edge'
         ],
+    },
+    'mvollmer/subscription-manager': {
+        '_manual': [
+            'cockpit/rhel-8-0',
+        ],
     }
+}
+
+# Random extra options for tests-invoke
+
+REPO_EXTRA_INVOKE_OPTIONS = {
+    'mvollmer/subscription-manager': [ "--html-logs" ]
 }
 
 # Label: should a PR trigger external tests
@@ -256,6 +274,9 @@ def tests_invoke(priority, name, number, revision, ref, context, base, repo, bot
 
     if repo != "cockpit-project/cockpit":
         cmd = cmd + " --remote=test"
+
+    if repo in REPO_EXTRA_INVOKE_OPTIONS:
+        cmd += " " + " ".join(REPO_EXTRA_INVOKE_OPTIONS[repo])
 
     cmd += " {context} {ref}"
     if bots_ref:
@@ -461,7 +482,7 @@ def cockpit_tasks(api, update, branch_contexts, repo, pull_data, pull_number, sh
             for proj_repo in REPO_BRANCH_CONTEXT:
                 if proj_repo == "cockpit-project/cockpit":
                     continue
-                for context in REPO_BRANCH_CONTEXT[proj_repo]["master"]:
+                for context in REPO_BRANCH_CONTEXT[proj_repo].get("master", []):
                     repo_context = context + "@" + proj_repo
 
                     status = statuses.get(repo_context, {})

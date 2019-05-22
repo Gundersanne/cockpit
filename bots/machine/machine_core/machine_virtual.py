@@ -33,6 +33,7 @@ import time
 from .exceptions import Failure, RepeatableFailure
 from .machine import Machine
 from .constants import TEST_DIR, BOTS_DIR
+from .directories import get_temp_dir
 
 MEMORY_MB = 1024
 
@@ -321,7 +322,7 @@ class VirtMachine(Machine):
         Machine.__init__(self, image=image, **args)
 
         base_dir = os.path.dirname(BOTS_DIR)
-        self.run_dir = os.path.join(os.environ.get("TEST_DATA", base_dir), "tmp", "run")
+        self.run_dir = os.path.join(get_temp_dir(), "run")
 
         self.virt_connection = self._libvirt_connection(hypervisor = "qemu:///session")
 
@@ -354,11 +355,7 @@ class VirtMachine(Machine):
     def _start_qemu(self):
         self._cleanup()
 
-        try:
-            os.makedirs(self.run_dir, 0o750)
-        except OSError as ex:
-            if ex.errno != errno.EEXIST:
-                raise
+        os.makedirs(self.run_dir, 0o750, exist_ok=True)
 
         def execute(*args):
             self.message(*args)
@@ -614,11 +611,7 @@ class VirtMachine(Machine):
     def add_disk(self, size=None, serial=None, path=None, type='raw'):
         index = len(self._disks)
 
-        try:
-            os.makedirs(self.run_dir, 0o750)
-        except OSError as ex:
-            if ex.errno != errno.EEXIST:
-                raise
+        os.makedirs(self.run_dir, 0o750, exist_ok=True)
 
         if path:
             (unused, image) = tempfile.mkstemp(suffix='.qcow2', prefix=os.path.basename(path), dir=self.run_dir)
