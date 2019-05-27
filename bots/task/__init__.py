@@ -223,7 +223,7 @@ def finish(publishing, ret, name, context, issue):
         requests = [ {
             "method": "POST",
             "resource": api.qualify("issues/{0}".format(number)),
-            "data": { "title": "[no-test] {0}".format(issue["title"]), "body": body }
+            "data": { "title": "{0}".format(issue["title"]), "body": body }
         } ]
 
         # Close the issue if it's not a pull request, successful, and all tasks done
@@ -417,8 +417,12 @@ def pull(branch, body=None, issue=None, base="master", labels=['bot'], run_tests
     if issue:
         try:
             data["issue"] = issue["number"]
+            issue_data = issue["number"]
         except TypeError:
             data["issue"] = int(issue)
+            issue_data = api.get("issues/{0}".format(data["issue"]))
+        if not run_tests:
+            data["title"] = "{0} [no-test]".format(issue_data["title"])
     else:
         data["title"] = "[no-test] " + kwargs["title"]
         if body:
