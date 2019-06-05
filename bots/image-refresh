@@ -133,10 +133,12 @@ def run(image, verbose=False, **kwargs):
 
     branch = task.branch(image, "images: Update {0} image".format(image), pathspec="bots/images", **kwargs)
     if branch:
-        pull = task.pull(branch, **kwargs)
 
-        # we want to validate all image refreshes with external projects
-        task.label(pull, ["test-external"])
+        # we want to validate all image refreshes with external projects; label
+        # before the pull, so the label is present in the pull data of the event
+        if kwargs["issue"]:
+            task.label(kwargs["issue"], ["test-external"])
+        pull = task.pull(branch, **kwargs)
 
         # Trigger this pull request
         api = github.GitHub()
