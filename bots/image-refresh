@@ -18,19 +18,23 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with Cockpit; If not, see <http://www.gnu.org/licenses/>.
 
+import logging
 import os
 import subprocess
 import sys
+import time
 
 import task
 from task import github, REDHAT_STORE
 
 TRIGGERS = {
     "centos-7": [
-        "verify/centos-7"
+        "verify/centos-7",
+        "cockpit/centos-7@cockpit-project/starter-kit",
     ],
     "continuous-atomic": [
-        "verify/continuous-atomic"
+        "verify/continuous-atomic",
+        "cockpit/continuous-atomic@cockpit-project/cockpit-ostree",
     ],
     "debian-testing": [
         "verify/debian-testing"
@@ -43,6 +47,7 @@ TRIGGERS = {
         "verify/fedora-atomic",
         "container/kubernetes",
         "container/bastion",
+        "cockpit/fedora-29@cockpit-project/cockpit-podman",
     ],
     "fedora-30": [
         "verify/fedora-30",
@@ -50,9 +55,18 @@ TRIGGERS = {
         "selenium/firefox",
         "selenium/edge",
         "avocado/fedora",
+        "cockpit/fedora-30@cockpit-project/starter-kit",
+        "cockpit/fedora-30@cockpit-project/cockpit-podman",
+        "cockpit/fedora-30@weldr/lorax",
+        "cockpit/fedora-30/live-iso@weldr/lorax",
+        "cockpit/fedora-30/qcow2@weldr/lorax",
+        "cockpit/fedora-30/chrome@weldr/cockpit-composer",
+        "cockpit/fedora-30/firefox@weldr/cockpit-composer",
+        "cockpit/fedora-30/edge@weldr/cockpit-composer",
     ],
     "fedora-atomic": [
-        "verify/fedora-atomic"
+        "verify/fedora-atomic",
+        "cockpit/fedora-atomic@cockpit-project/cockpit-ostree",
     ],
     "fedora-testing": [
         "verify/fedora-testing"
@@ -85,15 +99,18 @@ TRIGGERS = {
     ],
     "rhel-7-7": [
         "verify/rhel-7-7",
+        "cockpit/rhel-7-7/firefox@weldr/cockpit-composer",
     ],
     "rhel-8-0": [
         "verify/rhel-8-0"
     ],
     "rhel-8-1": [
-        "verify/rhel-8-1"
+        "verify/rhel-8-1",
+        "cockpit/rhel-8-1/chrome@weldr/cockpit-composer",
     ],
     "rhel-atomic": [
-        "verify/rhel-atomic"
+        "verify/rhel-atomic",
+        "cockpit/rhel-atomic@cockpit-project/cockpit-ostree",
     ]
 }
 
@@ -133,17 +150,35 @@ def run(image, verbose=False, **kwargs):
 
     branch = task.branch(image, "images: Update {0} image".format(image), pathspec="bots/images", **kwargs)
     if branch:
-        pull = task.pull(branch, **kwargs)
 
-        # we want to validate all image refreshes with external projects
-        task.label(pull, ["test-external"])
+        pull = task.pull(branch, run_tests=False, **kwargs)
 
         # Trigger this pull request
         api = github.GitHub()
+        old_head = pull["head"]["sha"]
         head = api.get("pulls/{}".format(pull["number"]))["head"]["sha"]
+        retry = 3
+        while head == old_head and retry:
+            time.sleep(3)
+            head = api.get("pulls/{}".format(pull["number"]))["head"]["sha"]
+            retry -= 1
+            if not retry:
+                logging.warning("Failed to retrieve newer head after force pushing, which needed for triggering tests")
+
         for trigger in triggers:
             api.post("statuses/{0}".format(head), { "state": "pending", "context": trigger,
                 "description": github.NOT_TESTED_DIRECT })
 
+        # wait until all of the statuses are present so the no-test label can
+        # safely be removed by the task api
+        triggers_present = all(status in triggers for status in api.statuses(head).keys())
+        retry = 3
+        while not triggers_present and retry:
+            time.sleep(3)
+            triggers_present = all(status in triggers for status in api.statuses(head).keys())
+            retry -= 1
+            if not retry:
+                logging.warning("Failed to confirm the presence of all triggers")
+
 if __name__ == '__main__':
-    task.main(function=run, title="Refresh image", run_tests=False)
+    task.main(function=run, title="Refresh image")
