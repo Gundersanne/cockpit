@@ -111,7 +111,13 @@ BASE = os.path.normpath(os.path.join(BOTS, ".."))
 
 sys.dont_write_bytecode = True
 
+pull = None
+im = None
+
 def run(image, verbose=False, **kwargs):
+    global pull
+    global im
+    im = image
     if not image:
         raise RuntimeError("no image specified")
 
@@ -138,12 +144,14 @@ def run(image, verbose=False, **kwargs):
         # we want to validate all image refreshes with external projects
         task.label(pull, ["test-external"])
 
+
+if __name__ == '__main__':
+    ret = task.main(function=run, title="Refresh image", run_tests=False, exit_after=False)
+    if not ret and pull and im:
         # Trigger this pull request
         api = github.GitHub()
         head = api.get("pulls/{}".format(pull["number"]))["head"]["sha"]
-        for trigger in triggers:
+        for trigger in TRIGGERS.get(im, [ ]):
             api.post("statuses/{0}".format(head), { "state": "pending", "context": trigger,
                 "description": github.NOT_TESTED_DIRECT })
-
-if __name__ == '__main__':
-    task.main(function=run, title="Refresh image", run_tests=False)
+    sys.exit(ret and 1 or 0)
