@@ -224,15 +224,10 @@ def finish(publishing, ret, name, context, issue, run_tests):
         # The sink wants us to escape colons :S
         body = checklist.body.replace(':', '::')
 
-        # Multiple failures would duplicate [no-test] in the title
-        if run_tests or "[no-test]" in issue["title"]:
-            title = issue["title"]
-        else:
-            title = "[no-test] {0}".format(issue["title"])
         requests = [ {
             "method": "POST",
             "resource": api.qualify("issues/{0}".format(number)),
-            "data": { "title": title, "body": body }
+            "data": { "title": issue["title"], "body": body }
         } ]
 
         # Close the issue if it's not a pull request, successful, and all tasks done
