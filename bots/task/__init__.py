@@ -84,7 +84,7 @@ BASE = os.path.normpath(os.path.join(BOTS, ".."))
 #   task.main(title="My title", function=run)
 #
 
-def main(**kwargs):
+def main(exit_after=True, **kwargs):
     global verbose
 
     task = kwargs.copy()
@@ -118,7 +118,10 @@ def main(**kwargs):
     if ret:
         sys.stderr.write("{0}: {1}\n".format(task["name"], ret))
 
-    sys.exit(ret and 1 or 0)
+    if exit_after:
+        sys.exit(ret and 1 or 0)
+    else:
+        return ret
 
 def named(task):
     if "name" in task:
@@ -224,15 +227,10 @@ def finish(publishing, ret, name, context, issue, run_tests):
         # The sink wants us to escape colons :S
         body = checklist.body.replace(':', '::')
 
-        # Multiple failures would duplicate [no-test] in the title
-        if run_tests or "[no-test]" in issue["title"]:
-            title = issue["title"]
-        else:
-            title = "[no-test] {0}".format(issue["title"])
         requests = [ {
             "method": "POST",
             "resource": api.qualify("issues/{0}".format(number)),
-            "data": { "title": title, "body": body }
+            "data": { "title": issue["title"], "body": body }
         } ]
 
         # Close the issue if it's not a pull request, successful, and all tasks done
