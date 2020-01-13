@@ -37,6 +37,7 @@ import { HealthCard } from './overview-cards/healthCard.jsx';
 import { MotdCard } from './overview-cards/motdCard.jsx';
 import { UsageCard } from './overview-cards/usageCard.jsx';
 import { ServerTime } from './overview-cards/serverTime.js';
+import { LastlogCard } from './overview-cards/lastlogCard.jsx';
 
 const _ = cockpit.gettext;
 
@@ -142,6 +143,7 @@ class OverviewPage extends React.Component {
                     </div>
                 </PageSection>
                 <PageSection variant={PageSectionVariants.default}>
+                    <LastlogCard />
                     <Gallery className='ct-system-overview' gutter="lg">
                         <MotdCard />
                         <HealthCard />
