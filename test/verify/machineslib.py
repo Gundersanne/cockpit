@@ -184,6 +184,14 @@ sleep 60
 reboot"""
 
 
+def startLibvirt(m):
+    # Ensure everything has started correctly
+    m.execute("systemctl start libvirtd.service")
+    # Wait until we can get a list of domains
+    wait(lambda: m.execute("virsh list"))
+    # Wait for the network 'default' to become active
+    wait(lambda: m.execute(command="virsh net-info default | grep Active"))
+
 # If this test fails to run, the host machine needs:
 # echo "options kvm-intel nested=1" > /etc/modprobe.d/kvm-intel.conf
 # rmmod kvm-intel && modprobe kvm-intel || true
@@ -196,7 +204,7 @@ class TestMachines(NetworkCase):
 
     def setUp(self):
         MachineCase.setUp(self)
-        self.startLibvirt()
+        startLibvirt(self.machine)
 
         m = self.machine
         # we don't have configuration to open the firewall for local libvirt machines, so just stop firewalld
@@ -207,15 +215,6 @@ class TestMachines(NetworkCase):
         # tests might fail not deterministically, always check journal, even if test failed.
         if self.machine.image.startswith('rhel-8-1') and self._testMethodName == 'testCreate' and not self.checkSuccess():
             self.check_journal_messages()
-
-    def startLibvirt(self):
-        m = self.machine
-        # Ensure everything has started correctly
-        m.execute("systemctl start libvirtd.service")
-        # Wait until we can get a list of domains
-        wait(lambda: m.execute("virsh list"))
-        # Wait for the network 'default' to become active
-        wait(lambda: m.execute(command="virsh net-info default | grep Active"))
 
     def startVm(self, name, graphics='spice', ptyconsole=False):
         m = self.machine
@@ -255,7 +254,9 @@ class TestMachines(NetworkCase):
 
         if not self.created_pool:
             xml = POOL_XML.format(path="/var/lib/libvirt/images")
-            m.execute("echo \"{0}\" > /tmp/xml && virsh pool-define /tmp/xml && virsh pool-start images".format(xml))
+            m.execute("echo \"{0}\" > /tmp/xml".format(xml))
+            m.execute("virsh pool-define /tmp/xml")
+            m.execute("virsh pool-start images")
             self.created_pool = True
 
         xml = VOLUME_XML.format(name=os.path.basename(img), image=img)
@@ -1294,16 +1295,31 @@ class TestMachines(NetworkCase):
                                     ".*Connection reset by peer")
         self.allow_browser_errors("Disconnection timed out.")
 
+
+class TestMachinesPersistent(PersistentMachineCase):
+    def setUp(self):
+        MachineCase.setUp(self)
+        startLibvirt(self.machine)
+        # we don't have configuration to open the firewall for local libvirt machines, so just stop firewalld
+        self.machine.execute("systemctl stop firewalld; systemctl try-restart libvirtd")
+
+    def tearDown(self):
+        # HACK: Because of https://bugzilla.redhat.com/show_bug.cgi?id=1728530
+        # tests might fail not deterministically, always check journal, even if test failed.
+        if self.machine.image.startswith('rhel-8-1') and self._testMethodName == 'testCreate' and not self.checkSuccess():
+            self.check_journal_messages()
+
     def testCreate(self):
         """
         this test will print many expected error messages
         """
 
-        runner = TestMachines.CreateVmRunner(self)
-        config = TestMachines.TestCreateConfig
+        runner = TestMachinesPersistent.CreateVmRunner(self)
+        config = TestMachinesPersistent.TestCreateConfig
 
         self.login_and_go("/machines")
         self.browser.wait_in_text("body", "Virtual Machines")
+        self.addCleanup(self.machine.execute, "rm -rf /home/admin/.local/share/libvirt/images/")
 
         def cancelDialogTest(dialog):
             dialog.open() \
@@ -1380,15 +1396,14 @@ class TestMachines(NetworkCase):
                 .checkEnvIsEmpty()
 
         runner.checkEnvIsEmpty()
-
         self.browser.enter_page('/machines')
         self.browser.wait_in_text("body", "Virtual Machines")
 
         # Check that when there is no storage pool defined a VM can still be created
-        createTest(TestMachines.VmDialog(self, sourceType='file',
-                                         location=config.NOVELL_MOCKUP_ISO_PATH,
-                                         storage_pool="No Storage",
-                                         start_vm=True))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='file',
+                                                   location=config.NOVELL_MOCKUP_ISO_PATH,
+                                                   storage_pool="No Storage",
+                                                   start_vm=True))
 
         self.browser.switch_to_top()
         self.browser.wait_not_visible("#navbar-oops")
@@ -1398,11 +1413,13 @@ class TestMachines(NetworkCase):
             "virsh pool-define-as default --type dir --target /var/lib/libvirt/images",
             "virsh pool-start default"
         ]
+        self.addCleanup(self.machine.execute, "virsh pool-destroy default && virsh pool-undefine default")
         self.machine.execute(" && ".join(cmds))
 
         # Fake the osinfo-db data in order that it will allow spawn the installation - of course we don't expect it to succeed -
         # we just need to check that the VM was spawned
         fedora_28_xml = self.machine.execute("cat /usr/share/osinfo/os/fedoraproject.org/fedora-28.xml")
+        self.addCleanup(self.machine.write, "/usr/share/osinfo/os/fedoraproject.org/fedora-28.xml", fedora_28_xml)
         self.machine.execute("cat /usr/share/osinfo/os/fedoraproject.org/fedora-28.xml > /tmp/fedora-28.xml")
         root = ET.fromstring(fedora_28_xml)
         root.find('os').find('resources').find('minimum').find('ram').text = '134217750'
@@ -1416,39 +1433,39 @@ class TestMachines(NetworkCase):
         self.browser.enter_page('/machines')
         self.browser.wait_in_text("body", "Virtual Machines")
 
-        createTest(TestMachines.VmDialog(self, sourceType='url',
-                                         location=config.VALID_URL,
-                                         storage_size=1))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='url',
+                                                   location=config.VALID_URL,
+                                                   storage_size=1))
 
         # test just the DIALOG CREATION and cancel
         print("    *\n    * validation errors and ui info/warn messages expected:\n    * ")
-        cancelDialogTest(TestMachines.VmDialog(self, sourceType='file',
-                                               location=config.NOVELL_MOCKUP_ISO_PATH,
-                                               memory_size=128, memory_size_unit='MiB',
-                                               storage_size=12500, storage_size_unit='GiB',
-                                               start_vm=True))
+        cancelDialogTest(TestMachinesPersistent.VmDialog(self, sourceType='file',
+                                                         location=config.NOVELL_MOCKUP_ISO_PATH,
+                                                         memory_size=128, memory_size_unit='MiB',
+                                                         storage_size=12500, storage_size_unit='GiB',
+                                                         start_vm=True))
 
-        cancelDialogTest(TestMachines.VmDialog(self, sourceType='url',
-                                               location=config.VALID_URL,
-                                               memory_size=256, memory_size_unit='MiB',
-                                               os_name=config.FEDORA_28,
-                                               start_vm=False))
+        cancelDialogTest(TestMachinesPersistent.VmDialog(self, sourceType='url',
+                                                         location=config.VALID_URL,
+                                                         memory_size=256, memory_size_unit='MiB',
+                                                         os_name=config.FEDORA_28,
+                                                         start_vm=False))
 
         # check if older os are filtered
-        checkFilteredOsTest(TestMachines.VmDialog(self, os_name=config.REDHAT_RHEL_4_7_FILTERED_OS))
+        checkFilteredOsTest(TestMachinesPersistent.VmDialog(self, os_name=config.REDHAT_RHEL_4_7_FILTERED_OS))
 
-        checkFilteredOsTest(TestMachines.VmDialog(self, os_name=config.MANDRIVA_2011_FILTERED_OS))
+        checkFilteredOsTest(TestMachinesPersistent.VmDialog(self, os_name=config.MANDRIVA_2011_FILTERED_OS))
 
-        checkFilteredOsTest(TestMachines.VmDialog(self, os_name=config.MAGEIA_3_FILTERED_OS))
+        checkFilteredOsTest(TestMachinesPersistent.VmDialog(self, os_name=config.MAGEIA_3_FILTERED_OS))
 
         # try to CREATE WITH DIALOG ERROR
         # name
-        checkDialogFormValidationTest(TestMachines.VmDialog(self, "", storage_size=1), {"Name": "Name must not be empty"})
+        checkDialogFormValidationTest(TestMachinesPersistent.VmDialog(self, "", storage_size=1), {"Name": "Name must not be empty"})
 
         # name already exists
-        createTest(TestMachines.VmDialog(self, name='existing-name', sourceType='url',
-                                         location=config.VALID_URL, storage_size=1,
-                                         delete=False))
+        createTest(TestMachinesPersistent.VmDialog(self, name='existing-name', sourceType='url',
+                                                   location=config.VALID_URL, storage_size=1,
+                                                   delete=False))
 
         self.machine.execute("virsh undefine existing-name")
 
@@ -1458,15 +1475,15 @@ class TestMachines(NetworkCase):
         if self.machine.image in ['debian-stable', 'debian-testing', 'ubuntu-stable', 'ubuntu-1804', 'fedora-30', 'fedora-testing', "centos-8-stream"]:
             self.browser.wait_not_present('select option[data-value="Download an OS"]')
         else:
-            createDownloadAnOSTest(TestMachines.VmDialog(self, name='existing-name', sourceType='downloadOS',
-                                                         expected_memory_size=256,
-                                                         expected_storage_size=256,
-                                                         os_name=config.FEDORA_28,
-                                                         os_short_id=config.FEDORA_28_SHORTID,
-                                                         start_vm=True, delete=False))
+            createDownloadAnOSTest(TestMachinesPersistent.VmDialog(self, name='existing-name', sourceType='downloadOS',
+                                                                   expected_memory_size=256,
+                                                                   expected_storage_size=256,
+                                                                   os_name=config.FEDORA_28,
+                                                                   os_short_id=config.FEDORA_28_SHORTID,
+                                                                   start_vm=True, delete=False))
 
-            checkDialogFormValidationTest(TestMachines.VmDialog(self, "existing-name", storage_size=1,
-                                                                check_script_finished=False, env_is_empty=False), {"Name": "already exists"})
+            checkDialogFormValidationTest(TestMachinesPersistent.VmDialog(self, "existing-name", storage_size=1,
+                                                                          check_script_finished=False, env_is_empty=False), {"Name": "already exists"})
 
             self.machine.execute("killall -9 virt-install")
 
@@ -1475,89 +1492,90 @@ class TestMachines(NetworkCase):
             self.browser.wait_not_present(".toast-notifications-list-pf div.pf-c-alert")
 
         # location
-        checkDialogFormValidationTest(TestMachines.VmDialog(self, sourceType='url',
-                                                            location="invalid/url",
-                                                            os_name=config.FEDORA_28), {"Source": "Source should start with"})
+        checkDialogFormValidationTest(TestMachinesPersistent.VmDialog(self, sourceType='url',
+                                                                      location="invalid/url",
+                                                                      os_name=config.FEDORA_28), {"Source": "Source should start with"})
 
         # memory
-        checkDialogFormValidationTest(TestMachines.VmDialog(self, memory_size=0, os_name=None), {"Memory": "Memory must not be 0"})
+        checkDialogFormValidationTest(TestMachinesPersistent.VmDialog(self, memory_size=0, os_name=None), {"Memory": "Memory must not be 0"})
 
         # storage
-        checkDialogFormValidationTest(TestMachines.VmDialog(self, storage_size=0), {"Size": "Storage size must not be 0"})
+        checkDialogFormValidationTest(TestMachinesPersistent.VmDialog(self, storage_size=0), {"Size": "Storage size must not be 0"})
 
         # start vm
-        checkDialogFormValidationTest(TestMachines.VmDialog(self, storage_size=1,
-                                                            os_name=config.FEDORA_28, start_vm=True),
+        checkDialogFormValidationTest(TestMachinesPersistent.VmDialog(self, storage_size=1,
+                                                                      os_name=config.FEDORA_28, start_vm=True),
                                       {"Source": "Installation Source must not be empty"})
 
         # disallow empty OS
-        checkDialogFormValidationTest(TestMachines.VmDialog(self, sourceType='url', location=config.VALID_URL,
-                                                            storage_size=100, storage_size_unit='MiB',
-                                                            start_vm=False, os_name=None),
+        checkDialogFormValidationTest(TestMachinesPersistent.VmDialog(self, sourceType='url', location=config.VALID_URL,
+                                                                      storage_size=100, storage_size_unit='MiB',
+                                                                      start_vm=False, os_name=None),
                                       {"Operating System": "You need to select the most closely matching Operating System"})
 
         # try to CREATE few machines
         if self.machine.image in ['debian-stable', 'debian-testing', 'ubuntu-stable', 'ubuntu-1804', 'fedora-30', 'fedora-testing', "centos-8-stream"]:
             self.browser.wait_not_present('select option[data-value="Download an OS"]')
         else:
-            createDownloadAnOSTest(TestMachines.VmDialog(self, sourceType='downloadOS',
-                                                         expected_memory_size=256,
-                                                         expected_storage_size=256,
-                                                         os_name=config.FEDORA_28,
-                                                         os_short_id=config.FEDORA_28_SHORTID))
+            createDownloadAnOSTest(TestMachinesPersistent.VmDialog(self, sourceType='downloadOS',
+                                                                   expected_memory_size=256,
+                                                                   expected_storage_size=256,
+                                                                   os_name=config.FEDORA_28,
+                                                                   os_short_id=config.FEDORA_28_SHORTID))
 
             self.machine.execute('cat /tmp/fedora-28.xml > /usr/share/osinfo/os/fedoraproject.org/fedora-28.xml')
 
-        createTest(TestMachines.VmDialog(self, sourceType='url',
-                                         location=config.VALID_URL,
-                                         memory_size=512, memory_size_unit='MiB',
-                                         storage_pool="No Storage",
-                                         os_name=config.MICROSOFT_SERVER_2016))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='url',
+                                                   location=config.VALID_URL,
+                                                   memory_size=512, memory_size_unit='MiB',
+                                                   storage_pool="No Storage",
+                                                   os_name=config.MICROSOFT_SERVER_2016))
 
-        createTest(TestMachines.VmDialog(self, sourceType='url',
-                                         location=config.VALID_URL,
-                                         memory_size=512, memory_size_unit='MiB',
-                                         storage_pool="No Storage",
-                                         os_name=config.MICROSOFT_SERVER_2016,
-                                         start_vm=False))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='url',
+                                                   location=config.VALID_URL,
+                                                   memory_size=512, memory_size_unit='MiB',
+                                                   storage_pool="No Storage",
+                                                   os_name=config.MICROSOFT_SERVER_2016,
+                                                   start_vm=False))
 
-        createTest(TestMachines.VmDialog(self, sourceType='url',
-                                         location=config.VALID_URL,
-                                         memory_size=256, memory_size_unit='MiB',
-                                         storage_size=100, storage_size_unit='MiB',
-                                         start_vm=False))
-        createTest(TestMachines.VmDialog(self, sourceType='file',
-                                         location=config.NOVELL_MOCKUP_ISO_PATH,
-                                         memory_size=256, memory_size_unit='MiB',
-                                         storage_pool="No Storage",
-                                         start_vm=False,
-                                         connection='session'))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='url',
+                                                   location=config.VALID_URL,
+                                                   memory_size=256, memory_size_unit='MiB',
+                                                   storage_size=100, storage_size_unit='MiB',
+                                                   start_vm=False))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='file',
+                                                   location=config.NOVELL_MOCKUP_ISO_PATH,
+                                                   memory_size=256, memory_size_unit='MiB',
+                                                   storage_pool="No Storage",
+                                                   start_vm=False,
+                                                   connection='session'))
 
         # Try setting the storage size to value bigger than it's available
         # The dialog should auto-adjust it to match the pool's available space
-        createTest(TestMachines.VmDialog(self, sourceType='file',
-                                         location=config.NOVELL_MOCKUP_ISO_PATH,
-                                         memory_size=256, memory_size_unit='MiB',
-                                         storage_size=100000, storage_size_unit='GiB',
-                                         start_vm=False))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='file',
+                                                   location=config.NOVELL_MOCKUP_ISO_PATH,
+                                                   memory_size=256, memory_size_unit='MiB',
+                                                   storage_size=100000, storage_size_unit='GiB',
+                                                   start_vm=False))
 
         # Try setting the memory to value bigger than it's available on the OS
         # The dialog should auto-adjust it to match the OS'es total memory
-        createTest(TestMachines.VmDialog(self, sourceType='file',
-                                         location=config.NOVELL_MOCKUP_ISO_PATH,
-                                         memory_size=100000, memory_size_unit='MiB',
-                                         storage_pool="No Storage",
-                                         os_name=config.OPENBSD_6_3,
-                                         start_vm=False))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='file',
+                                                   location=config.NOVELL_MOCKUP_ISO_PATH,
+                                                   memory_size=100000, memory_size_unit='MiB',
+                                                   storage_pool="No Storage",
+                                                   os_name=config.OPENBSD_6_3,
+                                                   start_vm=False))
 
         # Start of tests for import existing disk as installation option
-        createTest(TestMachines.VmDialog(self, sourceType='disk_image',
-                                         location=config.VALID_DISK_IMAGE_PATH,
-                                         memory_size=256, memory_size_unit='MiB',
-                                         start_vm=False))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='disk_image',
+                                                   location=config.VALID_DISK_IMAGE_PATH,
+                                                   memory_size=256, memory_size_unit='MiB',
+                                                   start_vm=False))
 
         # Recreate the image the previous test just deleted to reuse it
-        self.machine.execute("qemu-img create {0} 500M".format(TestMachines.TestCreateConfig.VALID_DISK_IMAGE_PATH))
+        self.machine.execute("qemu-img create {0} 500M".format(TestMachinesPersistent.TestCreateConfig.VALID_DISK_IMAGE_PATH))
+        self.addCleanup(self.machine.execute, "rm -f {0}".format(TestMachinesPersistent.TestCreateConfig.VALID_DISK_IMAGE_PATH))
 
         # Unload KVM module, otherwise we get errors getting the nested VMs
         # to start properly.
@@ -1566,10 +1584,10 @@ class TestMachines(NetworkCase):
         # Stop pmcd service if available which is invoking pmdakvm and is keeping KVM module used
         self.machine.execute("(systemctl stop pmcd || true) && modprobe -r kvm_intel && modprobe -r kvm_amd && modprobe -r kvm")
 
-        createTest(TestMachines.VmDialog(self, sourceType='disk_image',
-                                         location=config.VALID_DISK_IMAGE_PATH,
-                                         memory_size=256, memory_size_unit='MiB',
-                                         start_vm=True))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='disk_image',
+                                                   location=config.VALID_DISK_IMAGE_PATH,
+                                                   memory_size=256, memory_size_unit='MiB',
+                                                   start_vm=True))
         # End of tests for import existing disk as installation option
 
         cmds = [
@@ -1579,6 +1597,7 @@ class TestMachines(NetworkCase):
             "qemu-img create -f qcow2 /var/lib/libvirt/pools/tmpPool/vmTmpDestination.qcow2 128M",
             "virsh pool-refresh tmpPool"
         ]
+        self.addCleanup(self.machine.execute, "virsh pool-destroy tmpPool && virsh pool-undefine tmpPool")
         self.machine.execute(" && ".join(cmds))
 
         self.browser.reload()
@@ -1586,45 +1605,56 @@ class TestMachines(NetworkCase):
         self.browser.wait_in_text("body", "Virtual Machines")
 
         # Check choosing existing volume as destination storage
-        createTest(TestMachines.VmDialog(self, sourceType='file',
-                                         location=config.NOVELL_MOCKUP_ISO_PATH,
-                                         memory_size=256, memory_size_unit='MiB',
-                                         storage_pool="tmpPool",
-                                         storage_volume="vmTmpDestination.qcow2",
-                                         start_vm=True,))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='file',
+                                                   location=config.NOVELL_MOCKUP_ISO_PATH,
+                                                   memory_size=256, memory_size_unit='MiB',
+                                                   storage_pool="tmpPool",
+                                                   storage_volume="vmTmpDestination.qcow2",
+                                                   start_vm=True,))
 
         # Check "No Storage" option (only define VM)
-        createTest(TestMachines.VmDialog(self, sourceType='file',
-                                         location=config.NOVELL_MOCKUP_ISO_PATH,
-                                         memory_size=256, memory_size_unit='MiB',
-                                         storage_pool="No Storage",
-                                         start_vm=True,))
+        createTest(TestMachinesPersistent.VmDialog(self, sourceType='file',
+                                                   location=config.NOVELL_MOCKUP_ISO_PATH,
+                                                   memory_size=256, memory_size_unit='MiB',
+                                                   storage_pool="No Storage",
+                                                   start_vm=True,))
 
         # Test create VM with disk of type "block"
-        prepareDisk(self.machine)
+        self.machine.execute("modprobe scsi_debug")
+        self.addCleanup(self.machine.execute, "rmmod scsi_debug")
         cmds = [
-            "virsh pool-define-as poolDisk disk - - /dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_DISK1 - /tmp/poolDiskImages",
+            "virsh pool-define-as poolDisk disk - - /dev/sda - /tmp/poolDiskImages",
             "virsh pool-build poolDisk --overwrite",
             "virsh pool-start poolDisk",
             "virsh vol-create-as poolDisk sda1 1024"
         ]
         self.machine.execute(" && ".join(cmds))
+        self.addCleanup(self.machine.execute, "virsh pool-destroy poolDisk && virsh pool-undefine poolDisk")
 
         self.browser.reload()
         self.browser.enter_page('/machines')
         self.browser.wait_in_text("body", "Virtual Machines")
 
         # Check choosing existing volume as destination storage
-        createThenInstallTest(TestMachines.VmDialog(self, sourceType='file',
-                                                    location=config.NOVELL_MOCKUP_ISO_PATH,
-                                                    memory_size=256, memory_size_unit='MiB',
-                                                    storage_pool="poolDisk",
-                                                    storage_volume="sda1"))
+        createThenInstallTest(TestMachinesPersistent.VmDialog(self, sourceType='file',
+                                                              location=config.NOVELL_MOCKUP_ISO_PATH,
+                                                              memory_size=256, memory_size_unit='MiB',
+                                                              storage_pool="poolDisk",
+                                                              storage_volume="sda1"))
 
         if "debian" not in self.machine.image and "ubuntu" not in self.machine.image:
             # Test create VM with disk of type "network"
             target_iqn = "iqn.2019-09.cockpit.lan"
-            prepareStorageDeviceOnISCSI(self.machine, target_iqn)
+            orig_iqn = self.machine.execute("sed </etc/iscsi/initiatorname.iscsi -e 's/^.*=//'").rstrip()
+            self.addCleanup(self.machine.execute, """
+            virsh pool-destroy poolIscsi
+            virsh pool-undefine poolIscsi
+            targetcli /iscsi/%(tgt)s/tpg1/luns delete /backstores/ramdisk/test
+            targetcli /iscsi/%(tgt)s/tpg1/acls delete %(ini)s
+            targetcli /iscsi delete %(tgt)s
+            targetcli /backstores/ramdisk delete test
+            """ % {"tgt": target_iqn, "ini": orig_iqn})
+            prepareStorageDeviceOnISCSI(self.machine, target_iqn, orig_iqn)
 
             cmds = [
                 "virsh pool-define-as --name poolIscsi --type iscsi --source-host 127.0.0.1 --source-dev {0} --target /dev/disk/by-path/".format(target_iqn),
@@ -1639,16 +1669,15 @@ class TestMachines(NetworkCase):
             self.browser.wait_in_text("body", "Virtual Machines")
 
             # Check choosing existing volume as destination storage
-            createThenInstallTest(TestMachines.VmDialog(self, sourceType='file',
-                                                        location=config.NOVELL_MOCKUP_ISO_PATH,
-                                                        memory_size=256, memory_size_unit='MiB',
-                                                        storage_pool="poolIscsi",
-                                                        storage_volume="unit:0:0:0"))
+            createThenInstallTest(TestMachinesPersistent.VmDialog(self, sourceType='file',
+                                                                  location=config.NOVELL_MOCKUP_ISO_PATH,
+                                                                  memory_size=256, memory_size_unit='MiB',
+                                                                  storage_pool="poolIscsi",
+                                                                  storage_volume="unit:0:0:0"))
 
         virtInstallVersion = self.machine.execute("virt-install --version")
         if virtInstallVersion >= "2":
             self.machine.upload(["verify/files/min-openssl-config.cnf", "verify/files/mock-range-server.py"], "/tmp/")
-
             # Test detection of ISO file in URL
             cmds = [
                 # Generate certificate for https server
@@ -1656,17 +1685,27 @@ class TestMachines(NetworkCase):
                 "openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -subj '/CN=localhost' -nodes -config /tmp/min-openssl-config.cnf",
                 "cat cert.pem key.pem > server.pem"
             ]
+            cleanup = """
+            rm /tmp/min-openssl-config.cnf /tmp/mock-range-server.py
+            rm /tmp/cert.pem /tmp/key.pem /tmp/server.pem
+            rm /etc/pki/ca-trust/source/anchors/cert.pem
+            {0}
+            """
             if self.machine.image.startswith("ubuntu") or self.machine.image.startswith("debian"):
                 cmds += [
-                    "cp /tmp/cert.pem /usr/local/share/ca-certificates/cert.crt",
+                    "cp -f /tmp/cert.pem /usr/local/share/ca-certificates/cert.crt",
                     "update-ca-certificates"
                 ]
+                cleanup = cleanup.format("update-ca-certificates")
             else:
                 cmds += [
-                    "cp /tmp/cert.pem /etc/pki/ca-trust/source/anchors/cert.pem",
+                    "cp -f /tmp/cert.pem /etc/pki/ca-trust/source/anchors/cert.pem",
                     "update-ca-trust"
                 ]
+                cleanup = cleanup.format("update-ca-trust")
+
             self.machine.execute(" && ".join(cmds))
+            self.addCleanup(self.machine.execute, cleanup)
 
             # Run https server with range option support. QEMU uses range option
             # see: https://lists.gnu.org/archive/html/qemu-devel/2013-06/msg02661.html
@@ -1676,37 +1715,37 @@ class TestMachines(NetworkCase):
             # and on certain distribution supports only https (not http)
             # see: block-drv-ro-whitelist option in qemu-kvm.spec for certain distribution
             server = self.machine.spawn("cd /var/lib/libvirt && python3 /tmp/mock-range-server.py /tmp/server.pem", "httpsserver")
-
-            createTest(TestMachines.VmDialog(self, sourceType='url',
-                                             location=config.ISO_URL,
-                                             memory_size=256, memory_size_unit='MiB',
-                                             storage_pool="No Storage",
-                                             start_vm=True))
+            self.addCleanup(self.machine.execute, "pkill -P {0}".format(server))
+            createTest(TestMachinesPersistent.VmDialog(self, sourceType='url',
+                                                       location=config.ISO_URL,
+                                                       memory_size=256, memory_size_unit='MiB',
+                                                       storage_pool="No Storage",
+                                                       start_vm=True))
 
             # This functionality works on debian only because of extra dep.
             # Check error is returned if dependency is missing
             if self.machine.image.startswith("debian"):
                 # remove package
                 self.machine.execute("dpkg -P qemu-block-extra")
-                checkDialogErrorTest(TestMachines.VmDialog(self, sourceType='url',
-                                                           location=config.ISO_URL,
-                                                           memory_size=256, memory_size_unit='MiB',
-                                                           storage_pool="No Storage",
-                                                           start_vm=True), ["qemu", "protocol"])
-
-            self.addCleanup(self.machine.execute, "kill {0}".format(server))
+                checkDialogErrorTest(TestMachinesPersistent.VmDialog(self, sourceType='url',
+                                                                     location=config.ISO_URL,
+                                                                     memory_size=256, memory_size_unit='MiB',
+                                                                     storage_pool="No Storage",
+                                                                     start_vm=True), ["qemu", "protocol"])
             # End of test detection of ISO file in URL
 
         # test PXE Source
         if self.provider == "libvirt-dbus":
             # check that the pxe booting is not available on session connection
-            checkPXENotAvailableSessionTest(TestMachines.VmDialog(self, name='pxe-guest',
-                                                                  sourceType='pxe',
-                                                                  storage_pool="No Storage",
-                                                                  connection="session"))
+            checkPXENotAvailableSessionTest(TestMachinesPersistent.VmDialog(self, name='pxe-guest',
+                                                                            sourceType='pxe',
+                                                                            storage_pool="No Storage",
+                                                                            connection="session"))
 
             # test PXE Source
+            self.machine.execute("virsh net-dumpxml default > /tmp/default-net.xml")
             self.machine.execute("virsh net-destroy default && virsh net-undefine default")
+            self.addCleanup(self.machine.execute, "virsh net-define /tmp/default-net.xml && virsh net-start default")
 
             # Disable selinux because it makes TFTP directory inaccesible and we don't want sophisticated configuration for tests
             self.machine.execute("if type selinuxenabled >/dev/null 2>&1 && selinuxenabled; then setenforce 0; fi")
@@ -1726,22 +1765,31 @@ class TestMachines(NetworkCase):
                 "virsh net-start pxe-nat"
             ]
             self.machine.execute(" && ".join(cmds))
+            self.addCleanup(self.machine.execute, "virsh net-destroy pxe-nat && virsh net-undefine pxe-nat")
 
             # Add an extra network interface that should appear in the PXE source dropdown
-            iface = self.add_iface(activate=False)
+            self.machine.execute("mkdir -p /run/udev/rules.d/")
+            self.machine.execute("echo 'ENV{ID_NET_DRIVER}==\"veth\", ENV{INTERFACE}==\"eth42\", ENV{NM_UNMANAGED}=\"0\"' > /run/udev/rules.d/99-nm-veth-test.rules")
+            self.machine.execute("udevadm control --reload")
+            self.machine.execute("ip link add name eth42 type veth")
+            self.addCleanup(self.machine.execute, """
+            ip link delete eth42
+            rm -f /run/udev/rules.d/99-nm-veth-test.rules
+            udevadm control --reload
+            """)
 
             # We don't handle events for networks yet, so reload the page to refresh the state
             self.browser.reload()
             self.browser.enter_page('/machines')
             self.browser.wait_in_text("body", "Virtual Machines")
 
-            # First create the PXE VM but do not start it. We 'll need to tweak a bit the XML
-            # to have serial console at bios and also redirect serial console to a file
-            createTest(TestMachines.VmDialog(self, name='pxe-guest', sourceType='pxe',
-                                             location="Virtual Network pxe-nat: NAT",
-                                             memory_size=256, memory_size_unit='MiB',
-                                             storage_pool="No Storage",
-                                             start_vm=True, delete=False))
+            # # First create the PXE VM but do not start it. We 'll need to tweak a bit the XML
+            # # to have serial console at bios and also redirect serial console to a file
+            createTest(TestMachinesPersistent.VmDialog(self, name='pxe-guest', sourceType='pxe',
+                                                       location="Virtual Network pxe-nat: NAT",
+                                                       memory_size=256, memory_size_unit='MiB',
+                                                       storage_pool="No Storage",
+                                                       start_vm=True, delete=False))
 
             # We don't want to use start_vm == False because if we get a seperate install phase
             # virt-install will overwrite our changes.
@@ -1782,7 +1830,7 @@ class TestMachines(NetworkCase):
             xmlstr = ET.tostring(root, encoding='unicode', method='xml')
 
             self.machine.execute("echo \'{0}\' > /tmp/domain.xml && virsh define --file /tmp/domain.xml".format(xmlstr))
-
+            self.addCleanup(self.machine.execute, "rm -f /tmp/domain.xml")
             self.machine.execute("virsh start pxe-guest")
 
             # The file is full of ANSI control characters in between every letter, filter them out
@@ -1791,22 +1839,24 @@ class TestMachines(NetworkCase):
             self.machine.execute("virsh destroy pxe-guest && virsh undefine pxe-guest")
 
             # Check that host network devices are appearing in the options for PXE boot sources
-            createTest(TestMachines.VmDialog(self, sourceType='pxe',
-                                             location="Host Device {0}: macvtap".format(iface),
-                                             memory_size=256, memory_size_unit='MiB',
-                                             storage_pool="No Storage",
-                                             start_vm=False))
+            createTest(TestMachinesPersistent.VmDialog(self, sourceType='pxe',
+                                                       location="Host Device {0}: macvtap".format("eth42"),
+                                                       memory_size=256, memory_size_unit='MiB',
+                                                       storage_pool="No Storage",
+                                                       start_vm=False))
 
             # When switching from PXE mode to anything else make sure that the source input is empty
-            checkDialogFormValidationTest(TestMachines.VmDialog(self, storage_size=1,
-                                                                sourceType='pxe',
-                                                                location="Host Device {0}: macvtap".format(iface),
-                                                                sourceTypeSecondChoice='url',
-                                                                start_vm=False),
+            checkDialogFormValidationTest(TestMachinesPersistent.VmDialog(self, storage_size=1,
+                                                                          sourceType='pxe',
+                                                                          location="Host Device {0}: macvtap".format("eth42"),
+                                                                          sourceTypeSecondChoice='url',
+                                                                          start_vm=False),
                                           {"Source": "Installation Source must not be empty"})
 
         # Test that removing virt-install executable will disable Create VM button
-        self.machine.execute('rm $(which virt-install)')
+        virt_install_path = self.machine.execute("which virt-install").strip()
+        self.machine.execute('mv -f {} /tmp/virt-install.bak'.format(virt_install_path))
+        self.addCleanup(self.machine.execute, 'mv -f /tmp/virt-install.bak {}'.format(virt_install_path))
         self.browser.reload()
         self.browser.enter_page('/machines')
         self.browser.wait_visible("#create-new-vm:disabled")
@@ -1881,10 +1931,10 @@ class TestMachines(NetworkCase):
                      check_script_finished=True,
                      connection=None):
 
-            TestMachines.VmDialog.vmId += 1 # This variable is static - don't use self here
+            TestMachinesPersistent.VmDialog.vmId += 1 # This variable is static - don't use self here
 
             if name is None:
-                self.name = 'subVmTestCreate' + str(TestMachines.VmDialog.vmId)
+                self.name = 'subVmTestCreate' + str(TestMachinesPersistent.VmDialog.vmId)
             else:
                 self.name = name
 
@@ -1912,7 +1962,7 @@ class TestMachines(NetworkCase):
             self.check_script_finished = check_script_finished
             self.connection = connection
             if self.connection:
-                self.connectionText = TestMachines.TestCreateConfig.LIBVIRT_CONNECTION[connection]
+                self.connectionText = TestMachinesPersistent.TestCreateConfig.LIBVIRT_CONNECTION[connection]
 
         def getMemoryText(self):
             return "{0} {1}".format(self.memory_size, self.memory_size_unit)
@@ -2049,7 +2099,7 @@ class TestMachines(NetworkCase):
                 b.wait_val("#memory-size", self.expected_memory_size)
 
             # check minimum memory is correctly set in the slider - the following are fake data
-            if self.os_name in [TestMachines.TestCreateConfig.CIRROS, TestMachines.TestCreateConfig.FEDORA_28]:
+            if self.os_name in [TestMachinesPersistent.TestCreateConfig.CIRROS, TestMachinesPersistent.TestCreateConfig.FEDORA_28]:
                 b.wait_attr("#memory-size-slider  div[role=slider].hide", "aria-valuemin", "128")
 
             b.wait_visible("#start-vm")
@@ -2080,7 +2130,7 @@ class TestMachines(NetworkCase):
             init_state = "creating VM installation" if self.start_vm else "creating VM"
             second_state = "running" if self.start_vm else "shut off"
 
-            TestMachines.CreateVmRunner.assertVmStates(self, self.name, init_state, second_state)
+            TestMachinesPersistent.CreateVmRunner.assertVmStates(self, self.name, init_state, second_state)
             b.wait_not_present("#create-vm-dialog")
             return self
 
@@ -2173,12 +2223,12 @@ class TestMachines(NetworkCase):
             self.machine = test_obj.machine
             self.assertTrue = test_obj.assertTrue
 
-            self.machine.execute("touch {0}".format(TestMachines.TestCreateConfig.NOVELL_MOCKUP_ISO_PATH))
-            self.machine.execute("qemu-img create {0} 500M".format(TestMachines.TestCreateConfig.VALID_DISK_IMAGE_PATH))
+            self.machine.execute("touch {0}".format(TestMachinesPersistent.TestCreateConfig.NOVELL_MOCKUP_ISO_PATH))
+            self.machine.execute("qemu-img create {0} 500M".format(TestMachinesPersistent.TestCreateConfig.VALID_DISK_IMAGE_PATH))
 
         def destroy(self):
-            self.machine.execute("rm -f {0}".format(TestMachines.TestCreateConfig.NOVELL_MOCKUP_ISO_PATH))
-            self.machine.execute("rm -f {0}".format(TestMachines.TestCreateConfig.VALID_DISK_IMAGE_PATH))
+            self.machine.execute("rm -f {0}".format(TestMachinesPersistent.TestCreateConfig.NOVELL_MOCKUP_ISO_PATH))
+            self.machine.execute("rm -f {0}".format(TestMachinesPersistent.TestCreateConfig.VALID_DISK_IMAGE_PATH))
 
         @staticmethod
         def assertVmStates(test_obj, name, before, after):

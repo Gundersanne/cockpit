@@ -2044,5 +2044,14 @@ class TestMachinesDBus(machineslib.TestMachines):
         b.click("#vm-subVmTest1-forceOff")
         b.wait_in_text("#vm-subVmTest1-state", "shut off")
 
+class TestMachinesDBusPersistent(machineslib.TestMachinesPersistent):
+    def setUp(self):
+        super(TestMachinesDBusPersistent, self).setUp()
+        self.provider = "libvirt-dbus"
+        # HACK: https://launchpad.net/bugs/1802005
+        if self.machine.image == "ubuntu-stable":
+            self.machine.execute("chmod o+rwx /run/libvirt/libvirt-sock")
+
+
 if __name__ == '__main__':
     test_main()

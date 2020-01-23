@@ -52,6 +52,20 @@ class TestMachinesVirsh(machineslib.TestMachines):
         b.wait_in_text("#vm-subVmTest1-state", "running")
         b.wait_in_text("#vm-subVmTest1-autostart", "disabled")
 
+@allowImage("LibvirtDBus is the only available provider", "ubuntu-1804")
+class TestMachinesVirshPersistent(machineslib.TestMachinesPersistent):
+    def removeLibvirtDBus(self):
+        m = self.machine
+        if ("debian" in self.machine.image) or ("ubuntu" in self.machine.image):
+            m.execute("dpkg --remove libvirt-dbus || true")
+        else:
+            m.execute("rpm -e --nodeps libvirt-dbus || true")
+
+    def setUp(self):
+        super(TestMachinesVirshPersistent, self).setUp()
+
+        self.removeLibvirtDBus()
+        self.provider = "virsh"
 
 if __name__ == '__main__':
     test_main()
