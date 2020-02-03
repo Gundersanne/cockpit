@@ -19,6 +19,8 @@
 
 import unittest
 import subprocess
+import os
+import sys
 
 import parent
 from testlib import *
@@ -26,17 +28,21 @@ from testlib import *
 
 class TestTestLib(unittest.TestCase):
 
-    def testTestCategorization(self):
-        def compareOutput(cmd, *args):
-            blocks = set(frozenset(block.split("\n")) for block in subprocess.check_output(cmd).strip().decode().split("\n\n"))
-            self.assertEqual(blocks, set(args))
+    def testTestListing(self):
+        dirname, unused = os.path.split(sys.argv[0])
 
-        compareOutput(["test/verify/check-example", "-l", "TestPersistentExample", "TestSimple"],
-                      frozenset(["TestSimple.testOne", "TestSimple.testThree", "TestSimple.testTwo"]),
-                      frozenset(["TestPersistentExample.testOne", "TestPersistentExample.testTwo"]))
-
-        compareOutput(["test/verify/check-example", "-l", "TestSimple.testOne", "TestPersistentExample.testOne"],
-                      frozenset(["TestSimple.testOne"]), frozenset(["TestPersistentExample.testOne"]))
+        # Listing on check-* file
+        self.assertEqual(subprocess.check_output([os.path.join(dirname, "check-example"), "-l", "TestNondestructiveExample"]).strip().decode(),
+                         "TestNondestructiveExample.testOne\nTestNondestructiveExample.testTwo")
+        # Filter on class
+        self.assertEqual(subprocess.check_output([os.path.join(dirname, "run-tests"), "-l", "TestNondestructiveExample"]).strip().decode(),
+                         "1..2\nTestNondestructiveExample.testOne\nTestNondestructiveExample.testTwo")
+        # Filter a specific test
+        self.assertEqual(subprocess.check_output([os.path.join(dirname, "run-tests"), "-l", "TestNondestructiveExample.testOne"]).strip().decode(),
+                         "1..1\nTestNondestructiveExample.testOne")
+        # nondestructive tests are listed together
+        self.assertEqual(subprocess.check_output([os.path.join(dirname, "run-tests"), "-l", "TestSimple.testOne", "TestNondestructiveExample.testOne", "testNondestructive"]).strip().decode(),
+              "1..3\nTestExample.testNondestructive\nTestNondestructiveExample.testOne\nTestSimple.testOne")
 
 if __name__ == '__main__':
     test_main()
