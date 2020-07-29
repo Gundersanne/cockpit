@@ -56,6 +56,7 @@ class TestS4USsh(MachineCase):
         ipa_machine.execute("docker exec freeipa bash -c 'echo foobarfoo | kinit admin@COCKPIT.LAN'")
         # add user to impersonate
         ipa_machine.execute("docker exec freeipa bash -c 'ipa user-add --first=user --last=user user'")
+        ipa_machine.execute("docker exec freeipa bash -c 'echo foobarfoo | ipa user-mod user --password'")
         # add service which will be allowed to delegate creds
         ipa_machine.execute("docker exec freeipa bash -c 'ipa service-add cockpitclient/sshclient.cockpit.lan@COCKPIT.LAN --ok-as-delegate=true --ok-to-auth-as-delegate=true'")
         # Allow retrieval of service keytab by admin
@@ -69,6 +70,9 @@ class TestS4USsh(MachineCase):
         ipa servicedelegationrule-add-target cockpit-delegation --servicedelegationtargets="cockpit-target"
         """
         ipa_machine.execute("docker exec freeipa bash -ec '%s'" % script)
+
+        # why are there files missing from the sssd-common pkg?
+        sshd_machine.execute("mkdir /var/cache/krb5rcache && restorecon /var/cache/krb5rcache")
 
         # ssh client, get keytab for authenticating and make ccache using gssapi
         client_machine.write('/tmp/make-cache.py', """
@@ -90,8 +94,33 @@ gssapi.creds.rcred_cred_store.store_cred_into({ 'ccache'.encode(): 'FILE:/etc/co
         # enable gssapiauth
         sshd_machine.execute("sed -ri 's/#GSSAPIAuthentication (yes|no)/GSSAPIAuthentication yes/' /etc/ssh/sshd_config")
         sshd_machine.execute("systemctl daemon-reload && systemctl restart sshd")
+        client_machine.execute("KRB5RCACHEDIR=\"/var/cache/krb5rcache\" KRB5_TRACE=\"/dev/stderr\" KRB5CCNAME=\"/etc/cockpit.ccache\" ssh -vvv -K  user@sshserver.cockpit.lan echo hello")
 
-        client_machine.execute("KRB5_TRACE=\"/dev/stderr\" KRB5CCNAME=\"/etc/cockpit.ccache\" ssh -vvv -K  user@sshserver.cockpit.lan echo hello")
+        # configure gssapi authentication for sudo
+        sshd_machine.write('/etc/sudoers.d/cockpit-krb5-sudo', """
+Defaults    env_keep += "KRB5CCNAME"
+        """)
+
+        sshd_machine.write('/etc/pam.d/sudo', """
+auth       sufficient   pam_sss_gss.so
+auth       required     pam_deny.so
+account    include      system-auth
+password   include      system-auth
+session    optional     pam_keyinit.so revoke
+session    required     pam_limits.so
+session    include      system-auth
+""")
+
+        sshd_machine.execute(script="""#!/bin/sh
+        sed -i '/\[domain\/cockpit.lan\]/ a pam_gssapi_services = sudo, sudo-i' /etc/sssd/sssd.conf
+        systemctl restart sssd
+        usermod -G wheel user
+        su user
+        echo -ne 'foobarfoo\nfoobarfoo\nfoobarfoo\n' | kinit -c /home/user/cache user
+        KRB5CCNAME=/home/user/cache sudo echo hai
+        exit 0
+        """)
+        client_machine.execute("KRB5_TRACE=\"/dev/stderr\" KRB5CCNAME=\"/etc/cockpit.ccache\" ssh -vvv -K  user@sshserver.cockpit.lan bash -c 'KRB5CCNAME=/home/user/cache sudo echo hai'")
 
 
 if __name__ == '__main__':
